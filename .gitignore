@@ -1,0 +1,33 @@
+.model-router/
+__pycache__/
+*.py[cod]
+
+# Local evidence and settings
+.superpowers/
+.model-router.json
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Caches and editor/runtime artifacts
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Local backups and SQLite databases
+*.backup.*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
