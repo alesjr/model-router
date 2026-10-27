@@ -1,0 +1,12 @@
+# Decisões do Model Router
+
+Transcrição literal de todas as linhas `Ruling:` do ledger, preservadas na ordem original. Evidências relacionadas: [plano de implementação](../superpowers/plans/2026-10-24-model-router.md), [verificação final](model-router.md), [re-review delimitada](../../.superpowers/sdd/model-router/final-rereview-report.md), [ledger de execução](../../.superpowers/sdd/model-router/progress.md). Custos são copiados somente quando constam nas decisões; não há preços observados.
+
+- Ruling: usar `.superpowers/sdd/model-router/` como workspace de controle sem scripts dependentes de Git — diretório não é repositório e plano proíbe inicializá-lo — custo se errado: reorganização dos artefatos, sem efeito no produto.
+- Ruling: análises/revisões somente leitura não executam testes; testes, geração de metadados e comandos operacionais executados exclusivamente por `gpt-6-luna/low` — requisito do usuário prevalece sobre defaults de skills.
+- Ruling: antecipar controles comportamentais antes da tarefa 4 — writing-skills exige baseline antes de escrever skill — custo: avaliações curtas adicionais, sem alterar escopo.
+- Ruling: custo é ordem configurada de modelos, não preço inferido; política terá `cost_order` com modelos, perfis com `model`, `reasoning_effort`, `allowed_efforts`, mapa `complexity_profiles` — evita formatos divergentes entre testes e implementação.
+- Ruling: separar autoria de execução RED em tipos existentes — WORKER_SCOPE não pode ampliar pedido só de autoria e schema permanece estrito — custo se errado: uma unidade econômica extra, reduzível com reúso sequencial de worker suportado; sem novo campo público.
+- Ruling: preservar workspace de evidência em vez de apagá-lo — não há histórico Git substituindo os relatórios — custo se errado: arquivos de controle extras no diretório, removíveis pelo usuário sem afetar a skill.
+- Ruling: prompt CLI terá cabeçalho WORKER_SCOPE em JSON com permissões por tipo — regressão baseada em regex era frágil e podia ser satisfeita pelo texto da tarefa — custo se errado: ajuste do formato interno, sem alterar contrato público da tarefa.
+- Ruling: baseline e estatísticas de autoria permanecem no relatório de verificação, sem dependência de workspace interno na skill instalada — writing-skills exige instruções reutilizáveis sem narrativa de sessão — custo se errado: contexto de avaliação exige abrir relatório do projeto.
