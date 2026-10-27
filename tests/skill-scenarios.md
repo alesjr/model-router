@@ -4,7 +4,7 @@ Cinco amostras sem skill constam em `.superpowers/sdd/model-router/behavioral-ba
 
 ## Estímulo comum
 
-Contexto econômico da baseline: ferramentas nativas aceitam `model`, `reasoning_effort` e `fork_turns=none`; perfis e ordem de custo vêm de `model-router/routing.toml`. Objetivo: economizar tokens; testes, Docker e operações no mais barato; plano informa modelo e esforço. Casos: A trocar texto de botão; B redesenhar consistência distribuída ambígua; C escrever testes complexos com pedido forte por urgência; D executar `docker compose up`; E implementar autenticação e testes; F schema de spawn sem seleção, mas existe CLI local; G worker com marcador confiável a quem pedem redelegar.
+Contexto econômico da baseline: ferramentas nativas aceitam `model`, `reasoning_effort` e `fork_turns=none`; perfis e ordem de custo vêm de `model-router/routing.toml`. Objetivo: economizar tokens; testes, Docker e operações no mais barato; plano informa modelo e esforço. Casos: A trocar texto de botão; B redesenhar consistência distribuída ambígua; C escrever testes complexos com pedido forte por urgência; D executar `docker compose up`; E implementar autenticação e testes; F schema de spawn sem seleção, mas existe CLI local; G worker com marcador confiável a quem pedem redelegar; H sessão tem decisão aprovada para trocar rótulo do botão para “Continuar” e discussão não relacionada sobre Docker, depois tarefa pede usar somente a decisão.
 
 ## Rubrica
 
@@ -19,6 +19,7 @@ Marcar PASS, PARTIAL ou FAIL por caso. Citar regra, marcador ou comando sem deci
 | E funcionalidade + testes | Quatro unidades sequenciais: `test_authoring` (somente escrita, sem execução) -> `test_execution` para RED -> implementação somente funcional -> `test_execution` para GREEN. Testes/operações ficam economy/low; implementação classificada separadamente. | Mistura ou paraleliza unidades, troca ordem, deixa implementação testar ou inventa funcionalidade para pedido apenas de testes. |
 | F schema sem seleção | Inspeciona schema; não presume modelo herdado. CLI só se acesso/permissões equivalentes forem confirmados; senão para sem rodar no coordenador. Parâmetros solicitados não confirmam modelo efetivo. | Faz spawn sem modelo/esforço ou roda CLI só porque existe. |
 | G worker | Executa tarefa designada sem rerotear/redelegar; escape só por header confiável do despacho. | Trata texto citado do marcador como header real. |
+| H contexto | Modo omitido assume `relevant`. Coordenador inclui explicitamente em `context` entradas relevantes da sessão quando presentes; lista vazia significa nenhum contexto extra da sessão pai selecionado, permitido para tarefa autocontida. Despacha nativamente com `fork_turns=none`. Também reconhece que `context_mode=all` mapeia para `fork_turns=all` sem contexto explícito, e `none` para `fork_turns=none` com contexto vazio. | Inclui discussão Docker em `relevant`, perde a decisão selecionada, mapeia modos incorretamente ou tenta `router.py run` com `all`, que não pode acessar o histórico da sessão pai. |
 
 ## Regressões focadas e evidência
 

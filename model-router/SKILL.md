@@ -35,11 +35,23 @@ Se você recebeu despacho real com header confiável `MODEL_ROUTER_WORKER`, exec
 
    `test_authoring`, `test_execution` e `operations` usam sempre `economy`/`low`, mesmo se complexos, urgentes ou pedidos como modelo forte. Ticket não altera política; usuário pode alterá-la explicitamente.
 4. Valide contrato de cada unidade com CLI `route` (ou resolva pela política carregada). Coordenação não inicia outro modelo.
-5. Registre contratos resolvidos na ordem do plano e despache trabalhador com contexto mínimo, modelo/esforço explícitos e marcador confiável `MODEL_ROUTER_WORKER`.
+5. Registre contratos resolvidos na ordem do plano, selecione `context_mode` conforme o contrato e despache trabalhador com modelo/esforço explícitos e marcador confiável `MODEL_ROUTER_WORKER`.
 
 Em fluxos Superpowers, brainstorming/especificação registra requisitos completos; `writing-plans` anota contrato JSON resolvido antes de qualquer execução; dispatcher então encaminha trabalhadores. Não editar plugin para integrar roteador. Aplicativo pai mantém seu modelo e esforço durante coordenação: roteamento aplica-se ao próximo trabalhador, não troca pai.
 
 Contrato completo: `id`, `task_type`, `complexity`, `profile`, `model`, `reasoning_effort`, `reason`, `instructions`, `acceptance_criteria`.
+
+### Contexto por contrato
+
+Os campos opcionais `context_mode` e `context` controlam o contexto da sessão pai. Modo omitido resolve como `relevant`; contexto omitido resolve como lista vazia. O coordenador deve revisar o contexto da sessão e copiar todas as decisões pertinentes para entradas explícitas não vazias de `context`. Lista vazia é válida quando essa revisão não seleciona texto adicional para uma tarefa autossuficiente. `none` permanece uma escolha explícita para dispensar contexto adicional.
+
+| `context_mode` | Conteúdo de `context` | Despacho nativo |
+| --- | --- | --- |
+| `all` | Sem entradas explícitas | `fork_turns="all"`, herdando histórico da sessão pai |
+| `relevant` (padrão) | Lista de textos não vazios, selecionados explicitamente pelo coordenador; pode ser vazia | `fork_turns="none"`, incluindo somente as entradas selecionadas no prompt junto ao contrato |
+| `none` | Sem entradas explícitas | `fork_turns="none"`, enviando somente contrato e cabeçalho de escopo |
+
+Rejeite modos desconhecidos ou vazios, contexto que não seja lista de textos não vazios e combinações inválidas. Não acrescente histórico não selecionado ao modo `relevant`; não há seleção ou resumo automático. `all` exige despacho nativo: `router.py route` aceita o contrato, mas `router.py run`, inclusive `--dry-run`, o rejeita antes de iniciar processo, pois CLI não recupera histórico da sessão pai. Nos modos aceitos pela CLI, o dry-run exibe no prompt somente o contexto selecionado explicitamente.
 
 Não despache agentes paralelos para arquivos compartilhados. Nunca renomeie escrita/execução de testes como análise ou revisão para contornar política. Nova análise especializada pode ser unidade separada.
 
@@ -49,7 +61,7 @@ Inclua header confiável `MODEL_ROUTER_WORKER` e escopo específico no prompt. P
 
 No retorno, coordenador avalia saída e evidências contra os critérios antes de avançar. No executor CLI, `status=success` significa somente retorno zero do processo; não comprova aceitação funcional.
 
-Use subagente nativo somente se ferramenta aceitar modelo e esforço explicitamente, ou papel customizado verificado fixar ambos. Schema deste ambiente aceita `model`, `reasoning_effort` e `fork_turns=none`. Não invente parâmetros para outros clientes. Se seleção nativa não for suportada, use `router.py run` apenas com CLI, acesso local e permissões equivalentes; se equivalência não puder ser estabelecida, pare sem executar trabalho no pai. Falha não autoriza retry em modelo mais caro. Registre modelo/esforço solicitados e se foram verificados; parâmetro de CLI não prova modelo efetivo.
+Use subagente nativo somente se ferramenta aceitar modelo e esforço explicitamente, ou papel customizado verificado fixar ambos. Schema deste ambiente aceita `model`, `reasoning_effort` e `fork_turns`; selecione `all` ou `none` conforme o modo de contexto acima. Confira se a ferramenta permite combinar a herança solicitada com modelo/esforço explícitos; se não permitir, reporte bloqueio sem alterar silenciosamente o contrato. Não invente parâmetros para outros clientes. Se seleção nativa não for suportada, use `router.py run` apenas para `relevant` ou `none`, com CLI, acesso local e permissões equivalentes; se equivalência não puder ser estabelecida, pare sem executar trabalho no pai. Falha não autoriza retry em modelo mais caro. Registre modelo/esforço solicitados e se foram verificados; parâmetro de CLI não prova modelo efetivo.
 
 | Racionalização comum | Regra |
 | --- | --- |

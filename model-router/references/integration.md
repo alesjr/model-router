@@ -75,7 +75,7 @@ Não versione `.model-router/` nem os logs de telemetria. Para atualizar instala
 
 ## Contrato JSON
 
-Entrada para `route` contém os campos de tarefa; saída acrescenta perfil, modelo, esforço e razão. Exemplo completo após resolução:
+Entrada para `route` contém os campos de tarefa; saída acrescenta perfil, modelo, esforço, razão e os padrões de contexto. Exemplo completo após resolução:
 
 ```json
 {
@@ -86,6 +86,8 @@ Entrada para `route` contém os campos de tarefa; saída acrescenta perfil, mode
   "model": "gpt-6-luna",
   "reasoning_effort": "low",
   "reason": "Complexidade low seleciona perfil economy pela política de custo.",
+  "context_mode": "relevant",
+  "context": [],
   "instructions": "Ajustar texto do botão de envio conforme requisito aprovado.",
   "acceptance_criteria": ["Novo texto aparece no botão", "Nenhum outro comportamento muda"]
 }
@@ -96,6 +98,23 @@ Salve entrada JSON em `task.json`. Da raiz deste repositório, use script versio
 ```sh
 python3 model-router/scripts/router.py route --task task.json
 ```
+
+### Seleção de contexto
+
+`context_mode` é opcional e aceita `all`, `relevant` ou `none`; omitido, resolve como `relevant`. `context` é uma lista de textos não vazios; omitida, resolve como `[]`. O coordenador deve revisar o contexto da sessão e copiar todas as decisões pertinentes para entradas explícitas não vazias de `context`. Em `relevant`, lista vazia é válida quando essa revisão não seleciona texto adicional para uma tarefa autossuficiente. `none` permanece uma escolha explícita para dispensar contexto adicional. `all` e `none` rejeitam entradas explícitas; lista vazia é aceita. Modos desconhecidos ou vazios e formatos inválidos de contexto são rejeitados.
+
+No despacho nativo, `all` usa `fork_turns="all"` para herdar histórico da sessão pai. `relevant` e `none` usam `fork_turns="none"`: o primeiro acrescenta somente as entradas explícitas de `context` ao prompt do contrato; o segundo envia somente contrato e cabeçalho de escopo. Não acrescente histórico não selecionado nem faça resumo automático. Confira suporte da ferramenta para combinar o modo escolhido com modelo/esforço explícitos; incompatibilidade exige reportar bloqueio, sem trocar o contrato silenciosamente.
+
+Por exemplo, acrescente estes campos à entrada JSON para selecionar contexto:
+
+```json
+{
+  "context_mode": "relevant",
+  "context": ["O texto aprovado para o botão é Enviar pedido."]
+}
+```
+
+`route` valida os três modos. A CLI não recupera histórico da sessão pai: `run` rejeita `all`, inclusive com `--dry-run`, antes de iniciar processo. Para `relevant`, o prompt da CLI e o dry-run incluem somente as entradas selecionadas explicitamente; para `none`, não incluem contexto adicional.
 
 ## Tarefa mista com novos testes
 

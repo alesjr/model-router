@@ -17,7 +17,7 @@ Solicitação → divisão por responsabilidade → classificação → contrato
 
 A [skill](model-router/SKILL.md) define o procedimento; [routing.toml](model-router/routing.toml) define a política; [router.py](model-router/scripts/router.py) aplica validação determinística. O agente precisa inspecionar a solicitação: o script não interpreta linguagem natural nem decide se a complexidade declarada está correta.
 
-A via nativa exige ferramenta que aceite modelo e esforço explícitos, ou papel customizado com ambos verificados. Quando disponível, use contexto novo (`fork_turns="none"` no schema compatível). Se a seleção nativa não existir, a via CLI só pode ser usada com acesso local e permissões equivalentes. Sem essas condições, o coordenador reporta bloqueio, sem executar a tarefa no pai ou herdar seu modelo silenciosamente.
+A via nativa exige ferramenta que aceite modelo e esforço explícitos, ou papel customizado com ambos verificados. O contrato escolhe o contexto: `all` usa `fork_turns="all"`; `relevant` e `none` usam `fork_turns="none"`. Confira se a ferramenta permite combinar o modo escolhido com modelo/esforço explícitos. Se a seleção nativa não existir, a via CLI aceita `relevant` ou `none` com acesso local e permissões equivalentes. Sem essas condições, o coordenador reporta bloqueio, sem executar a tarefa no pai ou herdar seu modelo silenciosamente.
 
 ## Política padrão
 
@@ -108,6 +108,18 @@ No diretório do projeto alvo, salve como `task.json`:
 
 Esses cinco campos são obrigatórios. `acceptance_criteria` deve ser lista não vazia de textos não vazios. `complexity` aceita `low`, `medium` ou `high`; `task_type` aceita os seis tipos da tabela. Campos extras são rejeitados. Os campos opcionais `profile`, `model`, `reasoning_effort` e `reason` permitem registrar um contrato explícito; valores de perfil/modelo incompatíveis com a política são rejeitados.
 
+Os campos opcionais `context_mode` e `context` definem o contexto da sessão pai:
+
+| Modo | Contexto recebido |
+| --- | --- |
+| `all` | Histórico completo por despacho nativo com `fork_turns="all"`; não aceita entradas explícitas em `context` |
+| `relevant` (padrão) | Somente lista explícita de textos não vazios em `context`, podendo ser vazia; despacho nativo usa `fork_turns="none"` |
+| `none` | Somente contrato e cabeçalho de escopo; despacho nativo usa `fork_turns="none"`; não aceita entradas explícitas em `context` |
+
+Modo omitido resolve como `relevant`; contexto omitido resolve como `[]`. O coordenador deve revisar o contexto da sessão e copiar todas as decisões pertinentes para entradas explícitas não vazias de `context`. Em `relevant`, lista vazia é válida quando essa revisão não seleciona texto adicional para uma tarefa autossuficiente. `none` permanece uma escolha explícita para dispensar contexto adicional. Lista vazia também é aceita em `all` e `none`. Modos desconhecidos ou vazios, contextos com formato inválido e combinações inválidas são rejeitados. `relevant` inclui somente as entradas selecionadas explicitamente, sem acrescentar histórico não selecionado nem resumos automáticos. Exemplo de campos para adicionar ao contrato: `"context_mode": "relevant", "context": ["O texto aprovado para o botão é Enviar pedido."]`.
+
+`route` aceita os três modos. `run`, inclusive `--dry-run`, rejeita `all` antes de iniciar processo: CLI não recupera histórico da sessão pai. Nos modos aceitos, o prompt exibe somente o contexto explicitamente selecionado.
+
 Resolva sem iniciar Codex:
 
 ```sh
@@ -129,7 +141,9 @@ Com a política padrão, a saída é:
   "profile": "economy",
   "model": "gpt-6-luna",
   "reasoning_effort": "low",
-  "reason": "Complexidade low seleciona perfil economy pela política de custo."
+  "reason": "Complexidade low seleciona perfil economy pela política de custo.",
+  "context_mode": "relevant",
+  "context": []
 }
 ```
 

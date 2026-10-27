@@ -144,6 +144,60 @@ class RouterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "(?i)(custo|econôm|econom)"):
             router.resolve_task(task(), broken)
 
+    def test_context_mode_defaults_to_relevant_and_validates_mode_context_pairs(self):
+        resolved = router.resolve_task(task(), self.policy)
+        self.assertEqual(resolved["context_mode"], "relevant")
+        self.assertEqual(resolved["context"], [])
+
+        resolved = router.resolve_task(
+            task(context_mode="relevant", context=[]), self.policy)
+        self.assertEqual(resolved["context_mode"], "relevant")
+        self.assertEqual(resolved["context"], [])
+
+        resolved = router.resolve_task(
+            task(context_mode="relevant", context=["Selected parent detail."]), self.policy)
+        self.assertEqual(resolved["context_mode"], "relevant")
+        self.assertEqual(resolved["context"], ["Selected parent detail."])
+
+        resolved = router.resolve_task(task(context_mode="none"), self.policy)
+        self.assertEqual(resolved["context_mode"], "none")
+        self.assertEqual(resolved["context"], [])
+
+        invalid_values = [
+            task(context_mode="relevant", context=[""]),
+            task(context_mode="relevant", context=[" "]),
+            task(context_mode="all", context=["explicit detail"]),
+            task(context_mode="none", context=["explicit detail"]),
+            task(context_mode="unexpected"),
+        ]
+        for invalid in invalid_values:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                router.resolve_task(invalid, self.policy)
+
+    def test_cli_dry_run_prompt_contains_only_explicitly_selected_context(self):
+        selected = "Selected: parent decision."
+        unselected = "Unselected: unrelated conversation."
+        task_path = self.root / "task.json"
+        task_path.write_text(json.dumps(task(
+            context_mode="relevant", context=[selected], instructions="Do the work.")), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(router.subprocess, "run") as run, contextlib.redirect_stdout(stdout):
+            code = router.main(["run", "--task", str(task_path), "--cwd", str(self.root), "--dry-run"])
+        self.assertEqual(code, 0)
+        run.assert_not_called()
+        prompt = json.loads(stdout.getvalue())["prompt"]
+        self.assertIn(selected, prompt)
+        self.assertNotIn(unselected, prompt)
+
+    def test_cli_rejects_all_context_mode_before_subprocess_invocation(self):
+        task_path = self.root / "task.json"
+        task_path.write_text(json.dumps(task(context_mode="all")), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(router.subprocess, "run") as run, contextlib.redirect_stdout(stdout):
+            code = router.main(["run", "--task", str(task_path), "--cwd", str(self.root)])
+        self.assertNotEqual(code, 0)
+        run.assert_not_called()
+
     def test_build_command_uses_explicit_cwd_and_safe_cli_arguments(self):
         resolved = router.resolve_task(task(), self.policy)
         command = router.build_command(resolved, self.root)

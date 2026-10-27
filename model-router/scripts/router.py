@@ -13,13 +13,15 @@ import tomllib
 EFFORTS = {"low", "medium", "high"}
 COMPLEXITIES = {"low", "medium", "high"}
 PROFILES = {"economy", "standard", "strong"}
+CONTEXT_MODES = {"all", "relevant", "none"}
 TASK_TYPES = {
     "implementation", "test_authoring", "test_execution", "operations",
     "analysis", "review",
 }
 ECONOMY_TASK_TYPES = {"test_authoring", "test_execution", "operations"}
 REQUIRED_FIELDS = {"id", "task_type", "complexity", "instructions", "acceptance_criteria"}
-OPTIONAL_FIELDS = {"profile", "model", "reasoning_effort", "reason"}
+ROUTE_FIELDS = {"profile", "model", "reasoning_effort", "reason"}
+OPTIONAL_FIELDS = ROUTE_FIELDS | {"context_mode", "context"}
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "routing.toml"
 
 
@@ -87,7 +89,7 @@ def _validate_task(task: object) -> None:
         raise ValueError(f"Tarefa sem campos obrigatórios: {missing}.")
     if set(task) - REQUIRED_FIELDS - OPTIONAL_FIELDS:
         raise ValueError("Tarefa contém campos desconhecidos.")
-    for field in (REQUIRED_FIELDS - {"acceptance_criteria"}) | (OPTIONAL_FIELDS & task.keys()):
+    for field in (REQUIRED_FIELDS - {"acceptance_criteria"}) | (ROUTE_FIELDS & task.keys()):
         if not _nonempty_string(task[field]):
             raise ValueError(f"Campo {field} deve ser texto não vazio.")
     criteria = task["acceptance_criteria"]
@@ -99,6 +101,14 @@ def _validate_task(task: object) -> None:
         raise ValueError("Complexidade deve ser low, medium ou high.")
     if "reasoning_effort" in task and task["reasoning_effort"] not in EFFORTS:
         raise ValueError("Esforço deve ser low, medium ou high.")
+    mode = task.get("context_mode", "relevant")
+    if not isinstance(mode, str) or mode not in CONTEXT_MODES:
+        raise ValueError("context_mode deve ser all, relevant ou none.")
+    context = task.get("context", [])
+    if not isinstance(context, list) or not all(_nonempty_string(item) for item in context):
+        raise ValueError("context deve ser lista de textos não vazios.")
+    if mode != "relevant" and context:
+        raise ValueError(f"context_mode {mode} não aceita entradas explícitas em context.")
 
 
 def resolve_task(task: dict, policy: dict) -> dict:
@@ -126,12 +136,14 @@ def resolve_task(task: dict, policy: dict) -> dict:
         "model": profile["model"],
         "reasoning_effort": effort,
         "reason": task.get("reason", reason),
+        "context_mode": task.get("context_mode", "relevant"),
+        "context": task.get("context", []),
     }
 
 
 def _validate_resolved(task: dict) -> None:
     _validate_task(task)
-    if not OPTIONAL_FIELDS.issubset(task):
+    if not ROUTE_FIELDS.issubset(task):
         raise ValueError("Execução exige tarefa resolvida com perfil, modelo, esforço e motivo.")
 
 
@@ -145,6 +157,11 @@ def _validate_cwd(cwd: Path) -> Path:
 def build_command(task: dict, cwd: Path) -> list[str]:
     """Constrói argumentos sem shell ou alterações nas permissões do Codex."""
     _validate_resolved(task)
+    if task.get("context_mode", "relevant") == "all":
+        raise ValueError(
+            "context_mode all exige despacho nativo com fork_turns=all; "
+            "a CLI run, inclusive dry-run, não recupera o histórico da sessão pai."
+        )
     directory = _validate_cwd(cwd)
     return [
         "codex", "exec", "--model", task["model"],
@@ -173,6 +190,9 @@ def _build_prompt(task: dict) -> str:
         },
     }
     criteria = "\n".join(f"- {item}" for item in task["acceptance_criteria"])
+    context = ""
+    if task.get("context_mode", "relevant") == "relevant":
+        context = f"Contexto selecionado (JSON):\n{json.dumps(task.get('context', []), ensure_ascii=False)}\n\n"
     return (
         "MODEL_ROUTER_WORKER\n"
         f"WORKER_SCOPE={json.dumps(scope, ensure_ascii=False)}\n"
@@ -196,7 +216,8 @@ def _build_prompt(task: dict) -> str:
         "criptográfica de cumprimento. "
         "Preserve instruções locais, inclusive uso de rtk nos comandos quando exigido. "
         "Preserve políticas e permissões existentes; pare se não puder preservá-las.\n\n"
-        f"Tarefa: {json.dumps(task['id'], ensure_ascii=False)}\n\nInstruções:\n{task['instructions']}\n\n"
+        f"Tarefa: {json.dumps(task['id'], ensure_ascii=False)}\n\n"
+        f"{context}Instruções:\n{task['instructions']}\n\n"
         f"Critérios de aceitação:\n{criteria}\n"
     )
 
