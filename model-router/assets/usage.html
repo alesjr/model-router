@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Uso local do projeto</title>
+<style>
+:root { color-scheme: light dark; font: 16px system-ui,sans-serif; }
+body { max-width: 1000px; margin: 3rem auto; padding: 0 1rem; }
+h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; margin-top: 2rem; }
+p { line-height: 1.5; } label { display:inline-block; margin: .5rem 1rem .5rem 0; }
+select,input { font:inherit; padding: .4rem; }
+.metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin:1.5rem 0; }
+.metric { border:1px solid #8886; border-radius:6px; padding:1rem; }
+.metric strong { display:block; font-size:1.6rem; margin-top:.5rem; }
+.scroll { overflow-x:auto; } table { width:100%; border-collapse:collapse; }
+th,td { text-align:right; padding:.65rem; border-bottom:1px solid #8886; }
+th:first-child,td:first-child { text-align:left; overflow-wrap:anywhere; }
+.meta { opacity:.8; font-size:.9rem; } output { display:block; margin-top:1rem; }
+</style>
+<h1>Uso local do projeto</h1>
+<p id="snapshot" class="meta"></p>
+<p id="settings" class="meta"></p>
+<label>Período <select id="period"><option value="daily">Diário</option><option value="weekly" selected>Semanal</option><option value="cumulative">Acumulado</option></select></label>
+<label>Data <input type="date" id="date" required></label>
+<div class="metrics">
+<div class="metric">Total conhecido<strong id="total_tokens"></strong></div>
+<div class="metric">Entrada<strong id="input_tokens"></strong></div>
+<div class="metric">Entrada em cache<strong id="cached_input_tokens"></strong></div>
+<div class="metric">Saída<strong id="output_tokens"></strong></div>
+</div>
+<output id="coverage" aria-live="polite"></output>
+<p id="freshness" class="meta"></p>
+<h2>Modelo reportado</h2>
+<div class="scroll"><table><thead><tr><th>Modelo</th><th>Entrada</th><th>Cache</th><th>Saída</th><th>Total conhecido</th></tr></thead><tbody id="models"></tbody></table></div>
+<h2>Sessão</h2>
+<div class="scroll"><table><thead><tr><th>Sessão</th><th>Total conhecido</th></tr></thead><tbody id="sessions"></tbody></table></div>
+<p class="meta">Valores são registros locais. Cache integra entrada; raciocínio integra saída. Totais conhecidos podem ser parciais. Modelo reportado não comprova backend. Snapshot não sincroniza fontes; gere novamente após sync ou watch para atualizar.</p>
+<script id="usage-data" type="application/json">/*__USAGE_DATA__*/null</script>
+<script>
+"use strict";
+const payload=JSON.parse(document.getElementById("usage-data").textContent);
+const fields=payload.fields, data=payload.data;
+const el=id=>document.getElementById(id);
+const display=value=>value===null||value===undefined?"Indisponível":value.toLocaleString("pt-BR");
+const dayNumber=value=>Math.floor(Date.parse(value+"T00:00:00Z")/86400000);
+function aggregate(rows) {
+  const totals={},partial=[];
+  for(const key of fields) {
+    const known=rows.map(row=>row[key]).filter(value=>typeof value==="string"&&/^\d+$/.test(value)).map(value=>BigInt(value));
+    const subtotal=known.length?known.reduce((a,b)=>a+b,0n):null;
+    totals[key]=key==="total_tokens"||known.length===rows.length?subtotal:null;
+    if(!rows.length||known.length!==rows.length) partial.push(key);
+  }
+  return {totals,partial};
+}
+function view(period,date) {
+  const end=dayNumber(date),start=period==="daily"?end:period==="weekly"?end-6:-Infinity;
+  const selected=data.days.filter(day=>dayNumber(day.date)>=start&&dayNumber(day.date)<=end);
+  const diagnostics=data.diagnostics.filter(row=>!row.date||(dayNumber(row.date)>=start&&dayNumber(row.date)<=end));
+  const result=aggregate(selected.map(day=>day.totals));
+  const by_model=new Map(),by_session=new Map();
+  for(const day of selected) {
+    for(const [name,tokens] of Object.entries(day.by_model)) {
+      if(!by_model.has(name)) by_model.set(name,[]);
+      by_model.get(name).push(tokens);
+    }
+    for(const [name,row] of Object.entries(day.by_session)) {
+      if(!by_session.has(name)) by_session.set(name,[]);
+      by_session.get(name).push(row.totals);
+    }
+  }
+  const missing=period!=="cumulative"&&selected.length!==end-start+1;
+  return {totals:result.totals,by_model,by_session,
+    no_data:!selected.length,complete:!!selected.length&&!missing&&!diagnostics.length&&!result.partial.length&&selected.every(day=>day.coverage.complete),
+    last_sync:selected.map(day=>day.last_sync).filter(Boolean).sort().pop(),
+    timezone:selected.length?selected[0].timezone:null,
+    diagnostics:diagnostics.length,missing};
+}
+function table(id,rows,keys) {
+  const target=el(id);target.replaceChildren();
+  for(const [name,values] of [...rows.entries()].sort((a,b)=>a[0].localeCompare(b[0]))) {
+    const row=document.createElement("tr"),nameCell=document.createElement("td");
+    nameCell.textContent=name;row.append(nameCell);
+    const tokens=aggregate(values).totals;
+    for(const key of keys) { const cell=document.createElement("td");cell.textContent=display(tokens[key]);row.append(cell); }
+    target.append(row);
+  }
+  if(!rows.size) {const row=document.createElement("tr"),cell=document.createElement("td");cell.colSpan=keys.length+1;cell.textContent="Sem dados publicados neste período";row.append(cell);target.append(row);}
+}
+function render() {
+  const date=el("date").value;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(dayNumber(date))) return;
+  const current=view(el("period").value,date);
+  for(const key of ["total_tokens","input_tokens","cached_input_tokens","output_tokens"]) el(key).textContent=display(current.totals[key]);
+  el("coverage").textContent="Cobertura: "+(current.no_data?"indisponível":current.complete?"completa":"parcial")+(current.missing?" · dias sem publicação":"")+(current.diagnostics?" · publicações indisponíveis/inválidas":"");
+  el("freshness").textContent="Última coleta publicada: "+(current.last_sync||"indisponível")+" · Fuso: "+(current.timezone||"indisponível");
+  table("models",current.by_model,["input_tokens","cached_input_tokens","output_tokens","total_tokens"]);
+  table("sessions",current.by_session,["total_tokens"]);
+}
+el("snapshot").textContent="Snapshot gerado: "+payload.generated_at;
+el("settings").textContent="Coleta "+(payload.settings.enabled?"ativada":"desativada")+" · "+payload.settings.reason;
+el("date").value=payload.initial.date;
+el("period").addEventListener("change",render);el("date").addEventListener("change",render);render();
+</script>
+</html>

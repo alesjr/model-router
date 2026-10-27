@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Router"
+  short_description: "Roteie tarefas por política, modelo e esforço"
+  default_prompt: "Use $model-router para rotear esta tarefa por política e complexidade."

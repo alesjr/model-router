@@ -1,0 +1,22 @@
+# Ordem de custo configurada pelo usuário; não representa preços verificados.
+cost_order = ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]
+
+[complexity_profiles]
+low = "economy"
+medium = "standard"
+high = "strong"
+
+[profiles.economy]
+model = "gpt-6-luna"
+reasoning_effort = "low"
+allowed_efforts = ["low", "medium", "high"]
+
+[profiles.standard]
+model = "gpt-6.1-sol"
+reasoning_effort = "medium"
+allowed_efforts = ["low", "medium", "high"]
+
+[profiles.strong]
+model = "gpt-6-astra"
+reasoning_effort = "high"
+allowed_efforts = ["low", "medium", "high"]
