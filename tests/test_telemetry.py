@@ -460,6 +460,136 @@ class TelemetryTests(unittest.TestCase):
         telemetry.sync()
         self.assertTrue((manifest_path.parent / json.loads(manifest_path.read_text())["events"]).exists())
 
+    def test_sync_without_content_change_does_not_create_generation_and_prunes_old_generations(self):
+        write_rollout(self.source / "thread.jsonl", "t", "s", self.project,
+                      [context("turn"), response("turn", "r", "2026-10-26T10:00:00Z", usage(4), "t", "s")])
+        logs = self.root / "logs-retention"
+        telemetry = self.addCleanupCollector(self.collector(logs_dir=logs))
+        telemetry.sync()
+        day = logs / "2026-10-26"
+        manifest_path = day / "current.json"
+        first = json.loads(manifest_path.read_text(encoding="utf-8"))
+        telemetry.sync()
+        self.assertEqual(json.loads(manifest_path.read_text(encoding="utf-8")), first)
+        self.assertEqual(sorted(p.name for p in (day / "revisions").iterdir()), [str(first["revision"])])
+
+        (day / "revisions" / "legacy" ).mkdir()
+        (day / "revisions" / "legacy" / "summary.json").write_text("{}", encoding="utf-8")
+        (day / "revisions" / "999" ).mkdir()
+        (day / "revisions" / "999" / "summary.json").write_text("{}", encoding="utf-8")
+        telemetry.sync()
+        generations = sorted(p.name for p in (day / "revisions").iterdir())
+        self.assertEqual(generations, [str(first["revision"]), "legacy"])
+        self.assertEqual(telemetry.summary("2026-10-26")["totals"]["total_tokens"], 4)
+
+    def test_new_event_on_another_day_does_not_republish_stable_day_and_late_event_does(self):
+        path = self.source / "thread.jsonl"
+        write_rollout(path, "t", "s", self.project,
+                      [context("turn-a"), response("turn-a", "r-a", "2026-10-26T10:00:00Z", usage(4, 4), "t", "s")])
+        telemetry = self.addCleanupCollector(self.collector(logs_dir=self.root / "logs-dates"))
+        telemetry.sync()
+        day_a = telemetry.logs / "2026-10-26"
+        manifest_a_path = day_a / "current.json"
+        manifest_a = json.loads(manifest_a_path.read_text(encoding="utf-8"))
+        summary_a = json.loads((day_a / manifest_a["summary"]).read_text(encoding="utf-8"))
+        events_a = (day_a / manifest_a["events"]).read_bytes()
+
+        with path.open("a", encoding="utf-8") as stream:
+            turn_context = context("turn-b")
+            turn_context["timestamp"] = "2026-10-27T09:59:00Z"
+            event = response("turn-b", "r-b", "2026-10-27T10:00:00Z", usage(6, 6), "t", "s")
+            event["timestamp"] = event["payload"]["timestamp"]
+            stream.write(json.dumps(turn_context) + "\n")
+            stream.write(json.dumps(event) + "\n")
+        telemetry.sync()
+        self.assertEqual(json.loads(manifest_a_path.read_text(encoding="utf-8")), manifest_a)
+        self.assertEqual((day_a / manifest_a["events"]).read_bytes(), events_a)
+        self.assertEqual(json.loads((day_a / manifest_a["summary"]).read_text(encoding="utf-8"))["coverage"],
+                         summary_a["coverage"])
+
+        with path.open("a", encoding="utf-8") as stream:
+            turn_context = context("turn-c")
+            turn_context["timestamp"] = "2026-10-26T10:59:00Z"
+            event = response("turn-c", "r-c", "2026-10-26T11:00:00Z", usage(3, 3), "t", "s")
+            event["timestamp"] = event["payload"]["timestamp"]
+            stream.write(json.dumps(turn_context) + "\n")
+            stream.write(json.dumps(event) + "\n")
+        telemetry.sync()
+        revised = json.loads(manifest_a_path.read_text(encoding="utf-8"))
+        self.assertNotEqual(revised, manifest_a)
+        events = (day_a / revised["events"]).read_text(encoding="utf-8")
+        self.assertIn('"response_id":"r-c"', events)
+        self.assertIn('"response_id":"r-a"', events)
+        self.assertEqual(telemetry.summary("2026-10-26")["totals"]["total_tokens"], 7)
+
+    def test_retention_after_many_updates_preserves_events_and_unknown_entries(self):
+        path = self.source / "thread.jsonl"
+        rows = [context("turn-0"), response("turn-0", "r-0", "2026-10-26T10:00:00Z", usage(1, 1), "t", "s")]
+        write_rollout(path, "t", "s", self.project, rows)
+        logs = self.root / "logs-many-updates"
+        telemetry = self.addCleanupCollector(self.collector(logs_dir=logs))
+        telemetry.sync()
+        revisions = logs / "2026-10-26" / "revisions"
+        (revisions / "keep-me").mkdir()
+        (revisions / "keep-me" / "note.txt").write_text("user data", encoding="utf-8")
+        outside = self.root / "outside-generation"
+        outside.mkdir()
+        try:
+            (revisions / "linked-generation").symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+
+        for index in range(1, 5):
+            with path.open("a", encoding="utf-8") as stream:
+                turn_context = context(f"turn-{index}")
+                turn_context["timestamp"] = f"2026-10-26T10:0{index}:00Z"
+                event = response(f"turn-{index}", f"r-{index}", f"2026-10-26T10:0{index}:00Z", usage(1, 1), "t", "s")
+                event["timestamp"] = event["payload"]["timestamp"]
+                stream.write(json.dumps(turn_context) + "\n")
+                stream.write(json.dumps(event) + "\n")
+            telemetry.sync()
+
+        numeric = [entry for entry in revisions.iterdir() if entry.name.isdigit()]
+        self.assertLessEqual(len(numeric), 2)
+        self.assertEqual((revisions / "keep-me" / "note.txt").read_text(encoding="utf-8"), "user data")
+        self.assertTrue((revisions / "linked-generation").is_symlink())
+        self.assertTrue(outside.is_dir())
+        self.assertEqual(telemetry.summary("2026-10-26")["totals"]["total_tokens"], 5)
+        manifest = json.loads((logs / "2026-10-26" / "current.json").read_text(encoding="utf-8"))
+        exported = (logs / "2026-10-26" / manifest["events"]).read_text(encoding="utf-8")
+        for index in range(5):
+            self.assertIn(f'"response_id":"r-{index}"', exported)
+        with sqlite3.connect(telemetry.directory / "telemetry.sqlite3") as db:
+            persisted = [json.loads(row[0]) for row in db.execute("SELECT data FROM events")]
+        self.assertEqual(sum(event["kind"] == "token_usage_record" for event in persisted), 5)
+
+    def test_publication_failure_before_manifest_swap_keeps_previous_generation_and_sync_repairs(self):
+        write_rollout(self.source / "thread.jsonl", "t", "s", self.project,
+                      [context("turn-a"), response("turn-a", "r-a", "2026-10-26T10:00:00Z", usage(4), "t", "s")])
+        logs = self.root / "logs-atomic"
+        telemetry = self.addCleanupCollector(self.collector(logs_dir=logs))
+        telemetry.sync()
+        manifest_path = logs / "2026-10-26" / "current.json"
+        previous = manifest_path.read_bytes()
+        with (self.source / "thread.jsonl").open("a", encoding="utf-8") as stream:
+            event = response("turn-b", "r-b", "2026-10-26T11:00:00Z", usage(6), "t", "s")
+            event["timestamp"] = event["payload"]["timestamp"]
+            stream.write(json.dumps(event) + "\n")
+        original_write = telemetry._write
+        def fail_before_manifest(path, content):
+            if Path(path).name == "current.json":
+                raise OSError("injected publication failure")
+            return original_write(path, content)
+        with patch.object(telemetry, "_write", side_effect=fail_before_manifest):
+            with self.assertRaises(OSError):
+                telemetry.sync()
+        self.assertEqual(manifest_path.read_bytes(), previous)
+        self.assertEqual(telemetry.summary("2026-10-26")["totals"]["total_tokens"], 10)
+        telemetry.sync()
+        repaired = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertNotEqual(repaired, json.loads(previous))
+        self.assertEqual(telemetry.summary("2026-10-26")["totals"]["total_tokens"], 10)
+
     def test_exports_whitelisted_metadata_without_conversation_canary(self):
         canary = "PRIVATE_CONVERSATION_CANARY_7f31"
         event = response("turn", "r", "2026-10-26T10:00:00Z", usage(4), "t", "s")

@@ -210,6 +210,22 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(data["days"], [])
         self.assertTrue(data["diagnostics"])
 
+    def test_reader_retries_manifest_generation_race_but_reports_stable_corruption(self):
+        self.write_generation()
+        manifest = self.day / "current.json"
+        original = manifest.read_bytes()
+        with patch("usage_dashboard._read_file", side_effect=[original, FileNotFoundError(),
+                                                               original, (self.day / "revisions" / "3" / "summary.json").read_bytes(),
+                                                               original]):
+            data = read_usage(self.logs)
+        self.assertEqual(len(data["days"]), 1)
+        self.assertEqual(data["days"][0]["totals"]["total_tokens"], 100)
+
+        with patch("usage_dashboard._read_file", side_effect=FileNotFoundError()):
+            failed = read_usage(self.logs)
+        self.assertEqual(failed["days"], [])
+        self.assertEqual(failed["diagnostics"][0]["code"], "invalid_publication")
+
     def test_html_is_self_contained_escaped_and_uses_text_content(self):
         self.write_generation()
         destination = self.root / "usage local.html"

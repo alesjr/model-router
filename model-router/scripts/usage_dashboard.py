@@ -68,7 +68,7 @@ def _read_file(root, relative):
 
 
 def read_usage(logs_dir: Path) -> dict:
-    """Read each current manifest once; ignore audit logs and older revisions."""
+    """Read matching manifest/summary pairs with bounded retries during publication."""
     root = Path(logs_dir).expanduser()
     days, diagnostics = [], []
     if root.is_symlink():
@@ -84,54 +84,57 @@ def read_usage(logs_dir: Path) -> dict:
             day = _date(directory.name).isoformat()
         except ValueError:
             continue
-        try:
-            before = _read_file(root, f"{day}/current.json")
-            manifest = json.loads(before)
-            if not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
-                raise ValueError("Unsupported manifest schema")
-            if manifest.get("date", day) != day:
-                raise ValueError("Manifest date mismatch")
-            revision, zone = manifest.get("revision"), manifest.get("timezone")
-            if type(revision) is not int or revision < 0 or not isinstance(zone, str):
-                raise ValueError("Invalid manifest identity")
-            ZoneInfo(zone)
-            summary_name = manifest.get("summary")
-            if not isinstance(summary_name, str) or "\\" in summary_name:
-                raise ValueError("Invalid summary path")
-            parts = PurePosixPath(summary_name).parts
-            if (len(parts) != 3 or parts[0] != "revisions" or parts[2] != "summary.json"
-                    or not (parts[1] == str(revision) or parts[1].startswith(f"{revision}-"))):
-                raise ValueError("Summary outside generation")
-            summary = json.loads(_read_file(root, f"{day}/{summary_name}"))
-            if not isinstance(summary, dict) or type(summary.get("schema_version")) is not int or summary["schema_version"] != 1:
-                raise ValueError("Unsupported summary schema")
-            if (summary.get("date") != day or type(summary.get("revision")) is not int
-                    or summary["revision"] != revision or summary.get("timezone") != zone):
-                raise ValueError("Summary identity mismatch")
-            if _read_file(root, f"{day}/current.json") != before:
-                diagnostics.append({"date": day, "code": "publication_changed"})
-                continue
-            coverage = summary.get("coverage")
-            coverage = coverage if isinstance(coverage, dict) else {}
-            # Export coverage categories/counts only, never responses or source messages.
-            issues = [key for key, value in coverage.items()
-                      if key in ("baseline", "non_additive", "undated_responses", "source_gaps", "diagnostics", "missing") and value]
-            sessions = summary.get("by_session")
-            sessions = sessions if isinstance(sessions, dict) else {}
-            days.append({"date": day, "timezone": zone, "revision": revision,
-                         "last_sync": _timestamp(summary.get("last_sync")),
-                         "totals": _tokens(summary.get("totals")),
-                         "by_model": _models(summary.get("by_model")),
-                         "by_session": {name: {"totals": _tokens(row.get("totals")),
-                                                "by_model": _models(row.get("by_model"))}
-                                        for name, row in sessions.items()
-                                        if isinstance(name, str) and isinstance(row, dict)},
-                         "coverage": {"complete": coverage.get("complete") is True and not issues
-                                                   and summary.get("publication_lag") is not True,
-                                      "issues": issues,
-                                      "publication_lag": summary.get("publication_lag") is True}})
-        except (OSError, ValueError, TypeError, ZoneInfoNotFoundError):
-            diagnostics.append({"date": day, "code": "invalid_publication"})
+        for attempt in range(3):
+            try:
+                before = _read_file(root, f"{day}/current.json")
+                manifest = json.loads(before)
+                if not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
+                    raise ValueError("Unsupported manifest schema")
+                if manifest.get("date", day) != day:
+                    raise ValueError("Manifest date mismatch")
+                revision, zone = manifest.get("revision"), manifest.get("timezone")
+                if type(revision) is not int or revision < 0 or not isinstance(zone, str):
+                    raise ValueError("Invalid manifest identity")
+                ZoneInfo(zone)
+                summary_name = manifest.get("summary")
+                if not isinstance(summary_name, str) or "\\" in summary_name:
+                    raise ValueError("Invalid summary path")
+                parts = PurePosixPath(summary_name).parts
+                if (len(parts) != 3 or parts[0] != "revisions" or parts[2] != "summary.json"
+                        or not (parts[1] == str(revision) or parts[1].startswith(f"{revision}-"))):
+                    raise ValueError("Summary outside generation")
+                summary = json.loads(_read_file(root, f"{day}/{summary_name}"))
+                if not isinstance(summary, dict) or type(summary.get("schema_version")) is not int or summary["schema_version"] != 1:
+                    raise ValueError("Unsupported summary schema")
+                if (summary.get("date") != day or type(summary.get("revision")) is not int
+                        or summary["revision"] != revision or summary.get("timezone") != zone):
+                    raise ValueError("Summary identity mismatch")
+                if _read_file(root, f"{day}/current.json") != before:
+                    raise ValueError("Publication changed during read")
+                coverage = summary.get("coverage")
+                coverage = coverage if isinstance(coverage, dict) else {}
+                # Export coverage categories/counts only, never responses or source messages.
+                issues = [key for key, value in coverage.items()
+                          if key in ("baseline", "non_additive", "undated_responses", "source_gaps", "diagnostics", "missing") and value]
+                sessions = summary.get("by_session")
+                sessions = sessions if isinstance(sessions, dict) else {}
+                result = {"date": day, "timezone": zone, "revision": revision,
+                             "last_sync": _timestamp(summary.get("last_sync")),
+                             "totals": _tokens(summary.get("totals")),
+                             "by_model": _models(summary.get("by_model")),
+                             "by_session": {name: {"totals": _tokens(row.get("totals")),
+                                                    "by_model": _models(row.get("by_model"))}
+                                            for name, row in sessions.items()
+                                            if isinstance(name, str) and isinstance(row, dict)},
+                             "coverage": {"complete": coverage.get("complete") is True and not issues
+                                                       and summary.get("publication_lag") is not True,
+                                          "issues": issues,
+                                          "publication_lag": summary.get("publication_lag") is True}}
+                days.append(result)
+                break
+            except (OSError, ValueError, TypeError, ZoneInfoNotFoundError):
+                if attempt == 2:
+                    diagnostics.append({"date": day, "code": "invalid_publication"})
     if len({day["timezone"] for day in days}) > 1:
         diagnostics.append({"code": "mixed_timezones"})
         days = []  # Different calendar boundaries cannot be added safely.

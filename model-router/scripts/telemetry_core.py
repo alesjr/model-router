@@ -8,6 +8,7 @@ from functools import wraps
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import uuid
@@ -126,6 +127,7 @@ class Telemetry:
             self._set("reconciliation_version", "2")
             if has_content:
                 self._set("revision", int(self._state("revision", "0")) + 1)
+                self._set("reconciliation_publication_epoch", int(self._state("reconciliation_publication_epoch", "0")) + 1)
 
     def _diagnose(self, code, **location):
         data = {"code": code, **location}
@@ -667,6 +669,76 @@ class Telemetry:
                                "model_verified": False, "model_reported": None, "source": "router", "revision": int(self._state("revision")), "timezone": self.timezone})
         return sorted(output, key=lambda e: (e.get("timestamp") or "", e.get("thread_id") or "", e["kind"]))
 
+    def _daily_digest(self, events, summary):
+        # Strip publication clocks only at their defined locations. Coverage and
+        # diagnostics remain part of the signature, including their nested fields.
+        def response(record):
+            return {k: v for k, v in record.items() if k not in {"revision", "reconciliation_revision"}}
+        stable = {k: v for k, v in summary.items()
+                  if k not in {"revision", "published_revision", "publication_lag", "last_sync", "responses"}}
+        stable["responses"] = [response(record) for record in summary["responses"]]
+        return digest(encode({"events": [response(event) for event in events], "summary": stable,
+                              "reconciliation_version": self._state("reconciliation_version"),
+                              "reconciliation_publication_epoch": self._state("reconciliation_publication_epoch", "0")}).encode())
+
+    @staticmethod
+    def _generation_name(name):
+        return isinstance(name, str) and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:-[0-9a-f]{32})?", name) is not None
+
+    def _published_matches(self, directory, manifest, content_digest):
+        if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+                or manifest.get("timezone") != self.timezone or manifest.get("content_digest") != content_digest):
+            return False
+        revision = manifest.get("revision")
+        if type(revision) is not int or revision < 0:
+            return False
+        if not isinstance(manifest.get("events"), str):
+            return False
+        generation = manifest["events"].split("/")
+        if (len(generation) != 3 or generation[0] != "revisions" or generation[2] != "events.jsonl"
+                or not self._generation_name(generation[1]) or generation[1].split("-")[0] != str(revision)
+                or manifest.get("summary") != f"revisions/{generation[1]}/summary.json"):
+            return False
+        for key in ("events", "summary"):
+            path = directory / manifest[key]
+            if any(parent.is_symlink() for parent in (directory, path.parent.parent, path.parent, path)):
+                return False
+            if digest(path.read_bytes()) != manifest.get(key + "_digest"):
+                return False
+        return True
+
+    def _prune_generations(self, directory, manifest):
+        """Best-effort retention; never traverse links or remove unknown entries."""
+        revisions = directory / "revisions"
+        try:
+            if directory.is_symlink() or revisions.is_symlink():
+                return
+            current = manifest["events"].split("/")[1]
+            if not self._generation_name(current):
+                return
+            entries = [p for p in revisions.iterdir()
+                       if self._generation_name(p.name) and not p.is_symlink() and p.is_dir()]
+            previous = manifest.get("previous_generation")
+            if previous not in {p.name for p in entries} or previous == current:
+                # Legacy manifests have no previous pointer. Future/orphan
+                # generations do not qualify as the previous published revision.
+                older = [p for p in entries if int(p.name.split("-")[0]) < int(current.split("-")[0])]
+                previous = max(older, key=lambda p: (int(p.name.split("-")[0]), p.stat().st_mtime_ns), default=None)
+                previous = previous.name if previous else None
+            for entry in entries:
+                if entry.name in {current, previous}:
+                    continue
+                children = list(entry.iterdir())
+                if any(p.name not in {"events.jsonl", "summary.json"} or p.is_symlink() or not p.is_file()
+                       for p in children):
+                    continue
+                for child in children:
+                    child.unlink()
+                entry.rmdir()
+        except (OSError, ValueError, KeyError, TypeError):
+            # Cleanup must not invalidate a successful publication checkpoint.
+            return
+
     def _publish(self):
         require_enabled(self.project)
         records, coverage, _, _ = self._view()
@@ -682,11 +754,13 @@ class Telemetry:
             # The root-level publication checkpoint is committed only after all days succeed.
             summary.update(published_revision=revision, publication_lag=False)
             directory = self.logs / date
+            daily = [e for e in export_events if timestamp(e["timestamp"]) and timestamp(e["timestamp"]).astimezone(self.zone).date().isoformat() == date]
+            content_digest = self._daily_digest(daily, summary)
+            manifest = None
             try:
                 manifest = json.loads((directory / "current.json").read_text(encoding="utf-8"))
-                if manifest.get("revision") == revision and manifest.get("timezone") == self.timezone and all(
-                    (directory / manifest[key]).is_file() for key in ("events", "summary")
-                ):
+                if self._published_matches(directory, manifest, content_digest):
+                    self._prune_generations(directory, manifest)
                     continue
             except (OSError, ValueError, KeyError, TypeError):
                 pass
@@ -694,13 +768,22 @@ class Telemetry:
             suffix = str(revision) if not (directory / "revisions" / str(revision)).exists() else f"{revision}-{uuid.uuid4().hex}"
             generation = f"revisions/{suffix}"
             staging = directory / "revisions" / (".staging-" + uuid.uuid4().hex)
-            daily = [e for e in export_events if timestamp(e["timestamp"]) and timestamp(e["timestamp"]).astimezone(self.zone).date().isoformat() == date]
-            self._write(staging / "events.jsonl", "".join(encode(r) + "\n" for r in daily))
-            self._write(staging / "summary.json", encode(summary) + "\n")
+            events_content = "".join(encode(r) + "\n" for r in daily)
+            summary_content = encode(summary) + "\n"
+            self._write(staging / "events.jsonl", events_content)
+            self._write(staging / "summary.json", summary_content)
             os.rename(staging, directory / generation)
             self._fsync_directory(directory / "revisions")
-            self._write(directory / "current.json", encode({"schema_version": 1, "revision": revision, "timezone": self.timezone,
-                        "events": generation + "/events.jsonl", "summary": generation + "/summary.json"}) + "\n")
+            previous_path = manifest.get("events") if isinstance(manifest, dict) else None
+            previous = previous_path.split("/") if isinstance(previous_path, str) else []
+            published = {"schema_version": 1, "revision": revision, "timezone": self.timezone,
+                         "content_digest": content_digest, "events_digest": digest(events_content.encode()),
+                         "summary_digest": digest(summary_content.encode()),
+                         "events": generation + "/events.jsonl", "summary": generation + "/summary.json"}
+            if len(previous) == 3 and previous[0] == "revisions" and self._generation_name(previous[1]):
+                published["previous_generation"] = previous[1]
+            self._write(directory / "current.json", encode(published) + "\n")
+            self._prune_generations(directory, published)
         self._write(self.logs / "coverage.json", encode({"schema_version": 1, "revision": revision, "timezone": self.timezone, "coverage": coverage}) + "\n")
 
     def record_invocation(self, invocation):
